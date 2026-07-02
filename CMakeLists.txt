@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(preshaires-core
   src/core/conversion_probability.cpp
+  src/core/conversion_sampling.cpp
   src/core/geometry.cpp
   src/core/magnetic_field.cpp
   src/core/pair_production.cpp
@@ -59,4 +60,24 @@ add_test(
           --length-m 1e7
           --direction 0,0,-1
           --field-table ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/uniform_field.csv
+)
+
+add_test(
+  NAME preshaires-cli-sample-conversion-uniform
+  COMMAND preshaires-cli sample-conversion
+          --energy-eV 7e19
+          --length-m 1e7
+          --direction 0,0,-1
+          --uniform-field-T 2.115138e-5,0,0
+          --seed 12345
+)
+
+add_test(
+  NAME preshaires-cli-sample-conversion-tabulated
+  COMMAND preshaires-cli sample-conversion
+          --energy-eV 7e19
+          --length-m 1e7
+          --direction 0,0,-1
+          --field-table ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/uniform_field.csv
+          --seed 43
 )

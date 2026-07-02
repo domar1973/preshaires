@@ -2,7 +2,7 @@
 
 ## Scope
 
-This note describes v0.2 only: deterministic conversion probability for a
+This note describes deterministic conversion probability for a
 photon of fixed energy moving along a prescribed straight trajectory. It does
 not sample the conversion point, create a pair, propagate secondaries, evaluate
 Earth geometry or call IGRF.
@@ -83,6 +83,10 @@ The integral is evaluated with an iterative adaptive Simpson rule. The method:
 - rejects invalid energy, trajectory length, tolerances and nonfinite
   integrand values.
 
+The same implementation is exposed as `optical_depth(..., upper_path_length, ...)`
+so v0.3 sampling can evaluate `tau(s)` without duplicating the rate formula,
+field projection or integration method.
+
 ## Analytic Test Cases
 
 Uniform perpendicular field:
@@ -110,10 +114,9 @@ This has no closed form for the Erber rate in the tests, so the adaptive result
 is compared against a high-resolution independent trapezoidal reference built
 inside the test executable.
 
-## Limits of v0.2
+## Limits
 
-- No Monte Carlo sampling.
-- No interaction point.
+- Deterministic probability alone does not sample an interaction point.
 - No electron-positron energy split.
 - No magnetic emission.
 - No atmospheric cascade.

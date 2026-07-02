@@ -15,13 +15,13 @@ Experimental. This stage implements only:
 - photon `chi` for a transverse magnetic field;
 - the local Erber 1966 approximate pair-production rate;
 - deterministic conversion probability over a prescribed straight trajectory;
+- first-conversion sampling by optical depth with an injected RNG;
 - minimal CLI commands for local rate and trajectory probability;
 - unit tests for the bootstrap formula and unit conversions;
 - an empty, compilable AIRES adapter placeholder.
 
-It does not implement Monte Carlo interaction sampling, cascades, magnetic
-emission, pair energy sampling, Earth geometry, IGRF, Python bindings or real
-AIRES coupling.
+It does not implement pair creation, pair energy sampling, cascades, magnetic
+emission, Earth geometry, IGRF, Python bindings or real AIRES coupling.
 
 ## Build
 
@@ -79,6 +79,21 @@ s_m,Bx_T,By_T,Bz_T
 
 The probability command is deterministic. It does not sample a conversion
 point and does not create an electron-positron pair.
+
+To sample the first conversion point:
+
+```sh
+./build/preshaires sample-conversion \
+  --energy-eV 7e19 \
+  --length-m 1e7 \
+  --direction 0,0,-1 \
+  --uniform-field-T 2.115138e-5,0,0 \
+  --seed 12345
+```
+
+The sampler draws `U` from an injected RNG, computes `tau_target = -log(U)`,
+and localizes the first path length where `tau(s) >= tau_target`. This still
+does not create particles or run a cascade.
 
 ## Historical MaGICS
 

@@ -57,16 +57,30 @@ Probability probability_from_tau(double tau) {
 
 }  // namespace
 
-ConversionProbabilityResult conversion_probability(
-    Energy photon_energy, const StraightTrajectory& trajectory,
-    const MagneticFieldModel& field, const IntegrationOptions& options) {
+Probability conversion_probability_from_optical_depth(OpticalDepth optical_depth) {
+  if (!std::isfinite(optical_depth.value) || optical_depth.value < 0.0) {
+    throw std::invalid_argument("Optical depth must be finite and nonnegative");
+  }
+  return probability_from_tau(optical_depth.value);
+}
+
+OpticalDepthResult optical_depth(Energy photon_energy,
+                                 const StraightTrajectory& trajectory,
+                                 const MagneticFieldModel& field,
+                                 Length upper_path_length,
+                                 const IntegrationOptions& options) {
   if (!is_finite(photon_energy) || photon_energy.eV <= 0.0) {
     throw std::invalid_argument("Photon energy must be finite and positive");
   }
   validate_trajectory(trajectory);
   validate_options(options);
+  if (!is_finite(upper_path_length) || upper_path_length.meter < 0.0 ||
+      upper_path_length.meter > trajectory.length.meter) {
+    throw std::invalid_argument(
+        "Upper path length must be within the trajectory interval");
+  }
 
-  const double length = trajectory.length.meter;
+  const double length = upper_path_length.meter;
   std::size_t evaluations = 0;
   const auto evaluate = [&](double s) {
     if (evaluations >= options.max_evaluations) {
@@ -91,7 +105,7 @@ ConversionProbabilityResult conversion_probability(
   };
 
   if (length == 0.0) {
-    return ConversionProbabilityResult{OpticalDepth{0.0}, Probability{0.0}, 0};
+    return OpticalDepthResult{OpticalDepth{0.0}, 0};
   }
 
   const double fa = evaluate(0.0);
@@ -146,9 +160,18 @@ ConversionProbabilityResult conversion_probability(
     throw std::runtime_error("Integrated optical depth is invalid");
   }
 
-  return ConversionProbabilityResult{OpticalDepth{integral},
-                                     probability_from_tau(integral),
-                                     evaluations};
+  return OpticalDepthResult{OpticalDepth{integral}, evaluations};
+}
+
+ConversionProbabilityResult conversion_probability(
+    Energy photon_energy, const StraightTrajectory& trajectory,
+    const MagneticFieldModel& field, const IntegrationOptions& options) {
+  const OpticalDepthResult tau =
+      optical_depth(photon_energy, trajectory, field, trajectory.length, options);
+  return ConversionProbabilityResult{
+      tau.optical_depth,
+      conversion_probability_from_optical_depth(tau.optical_depth),
+      tau.evaluations};
 }
 
 }  // namespace preshaires

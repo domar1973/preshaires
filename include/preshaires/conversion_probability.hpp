@@ -28,6 +28,19 @@ struct ConversionProbabilityResult {
   std::size_t evaluations;
 };
 
+struct OpticalDepthResult {
+  OpticalDepth optical_depth;
+  std::size_t evaluations;
+};
+
+[[nodiscard]] Probability conversion_probability_from_optical_depth(
+    OpticalDepth optical_depth);
+
+[[nodiscard]] OpticalDepthResult optical_depth(
+    Energy photon_energy, const StraightTrajectory& trajectory,
+    const MagneticFieldModel& field, Length upper_path_length,
+    const IntegrationOptions& options);
+
 [[nodiscard]] ConversionProbabilityResult conversion_probability(
     Energy photon_energy, const StraightTrajectory& trajectory,
     const MagneticFieldModel& field, const IntegrationOptions& options);

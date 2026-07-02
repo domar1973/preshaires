@@ -68,9 +68,10 @@ model should be introduced before broadening the public C API.
 
 ## RNG
 
-The first bootstrap formula is deterministic and uses no RNG. Future stochastic
-transport must receive RNG state through explicit parameters or interfaces.
-There must be no mutable global RNG in the core.
+Stochastic operations receive RNG state through `RandomEngine`, whose
+`uniform_open01()` contract is a finite value `0 < U < 1`. There is no mutable
+global RNG in the core. Standalone CLI code may adapt `std::mt19937_64`; AIRES
+can later provide its own adapter through the same interface.
 
 ## I/O
 
@@ -120,6 +121,21 @@ iterative adaptive Simpson rule with explicit absolute/relative tolerances,
 evaluation counting and a maximum-evaluation failure path. It computes only
 survival probability, not the sampled interaction point.
 
+## First-Conversion Sampling
+
+v0.3 adds optical-depth sampling:
+
+```text
+U in (0, 1)
+tau_target = -log(U)
+```
+
+If `tau_target < tau_total`, the first conversion point is localized by
+bisection on `tau(s) - tau_target` using repeated calls to the same
+`optical_depth()` implementation. The returned point is the first compatible
+upper bracket within the requested path-length tolerance. This is not fixed-step
+Monte Carlo transport and does not create pair particles.
+
 ## Deferred Geometry and IGRF
 
 Earth coordinates, altitude, AIRES coordinate transforms and IGRF remain
@@ -136,6 +152,10 @@ positivity and local monotonicity. Historical diagnostics under `docs/`,
 v0.2 extends tests to geometry, uniform and tabulated fields, analytic uniform
 optical depth, parallel-field zero probability, linear-profile integration,
 convergence, small probabilities and saturated probabilities.
+
+v0.3 adds deterministic RNG tests, invalid-RNG rejection, analytic uniform
+sampling, no-conversion cases, zero-rate/plateau localization, reproducibility
+and a seeded statistical conversion-fraction test.
 
 ## Migration Strategy
 

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -10,9 +12,11 @@
 #include <vector>
 
 #include "preshaires/conversion_probability.hpp"
+#include "preshaires/conversion_sampling.hpp"
 #include "preshaires/geometry.hpp"
 #include "preshaires/magnetic_field.hpp"
 #include "preshaires/pair_production.hpp"
+#include "preshaires/random.hpp"
 #include "preshaires/units.hpp"
 
 namespace {
@@ -23,6 +27,30 @@ struct Vector3 {
   double z;
 };
 
+struct ProbabilityInputs {
+  preshaires::Energy energy;
+  preshaires::StraightTrajectory trajectory;
+  std::unique_ptr<preshaires::MagneticFieldModel> field;
+};
+
+class Mt19937RandomEngine final : public preshaires::RandomEngine {
+ public:
+  explicit Mt19937RandomEngine(std::uint64_t seed) : engine_(seed) {}
+
+  double uniform_open01() override {
+    for (;;) {
+      const std::uint64_t value = engine_();
+      if (value != 0 && value != std::numeric_limits<std::uint64_t>::max()) {
+        return static_cast<double>(value) /
+               static_cast<double>(std::numeric_limits<std::uint64_t>::max());
+      }
+    }
+  }
+
+ private:
+  std::mt19937_64 engine_;
+};
+
 void print_usage() {
   std::cerr
       << "usage:\n"
@@ -30,7 +58,11 @@ void print_usage() {
       << "  preshaires probability --energy-eV VALUE --length-m VALUE "
          "--direction X,Y,Z --uniform-field-T Bx,By,Bz\n"
       << "  preshaires probability --energy-eV VALUE --length-m VALUE "
-         "--direction X,Y,Z --field-table PATH\n";
+         "--direction X,Y,Z --field-table PATH\n"
+      << "  preshaires sample-conversion --energy-eV VALUE --length-m VALUE "
+         "--direction X,Y,Z --uniform-field-T Bx,By,Bz --seed VALUE\n"
+      << "  preshaires sample-conversion --energy-eV VALUE --length-m VALUE "
+         "--direction X,Y,Z --field-table PATH --seed VALUE\n";
 }
 
 bool parse_double(std::string_view text, double& value) {
@@ -118,6 +150,83 @@ std::vector<preshaires::TabulatedMagneticFieldNode> read_field_table(
   return nodes;
 }
 
+ProbabilityInputs parse_probability_inputs(int argc, char** argv,
+                                           bool allow_seed,
+                                           std::uint64_t* seed_out) {
+  bool have_energy = false;
+  bool have_length = false;
+  bool have_direction = false;
+  bool have_uniform = false;
+  bool have_table = false;
+  bool have_seed = false;
+  double energy_eV = 0.0;
+  double length_m = 0.0;
+  Vector3 direction{0.0, 0.0, 0.0};
+  Vector3 uniform_field{0.0, 0.0, 0.0};
+  std::string table_path;
+  std::uint64_t seed = 0;
+
+  for (int i = 2; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      throw std::invalid_argument("Missing value for option");
+    }
+    const std::string_view option{argv[i]};
+    if (option == "--energy-eV") {
+      have_energy = parse_double(argv[i + 1], energy_eV);
+    } else if (option == "--length-m") {
+      have_length = parse_double(argv[i + 1], length_m);
+    } else if (option == "--direction") {
+      direction = parse_vector3(argv[i + 1]);
+      have_direction = true;
+    } else if (option == "--uniform-field-T") {
+      uniform_field = parse_vector3(argv[i + 1]);
+      have_uniform = true;
+    } else if (option == "--field-table") {
+      table_path = argv[i + 1];
+      have_table = true;
+    } else if (option == "--seed" && allow_seed) {
+      double parsed_seed = 0.0;
+      have_seed = parse_double(argv[i + 1], parsed_seed) &&
+                  parsed_seed >= 0.0 &&
+                  parsed_seed <=
+                      static_cast<double>(std::numeric_limits<std::uint64_t>::max()) &&
+                  std::floor(parsed_seed) == parsed_seed;
+      seed = static_cast<std::uint64_t>(parsed_seed);
+    } else {
+      throw std::invalid_argument("Unknown option");
+    }
+  }
+
+  if (!have_energy || !have_length || !have_direction ||
+      have_uniform == have_table || (allow_seed && !have_seed)) {
+    throw std::invalid_argument("Missing or inconsistent probability arguments");
+  }
+
+  const auto length = preshaires::meters(length_m);
+  auto field = std::unique_ptr<preshaires::MagneticFieldModel>{};
+  if (have_uniform) {
+    field = std::make_unique<preshaires::UniformMagneticField>(
+        preshaires::MagneticFieldVector{preshaires::tesla(uniform_field.x),
+                                        preshaires::tesla(uniform_field.y),
+                                        preshaires::tesla(uniform_field.z)});
+  } else {
+    field = std::make_unique<preshaires::TabulatedMagneticField>(
+        read_field_table(table_path, length));
+  }
+
+  if (seed_out != nullptr) {
+    *seed_out = seed;
+  }
+  return ProbabilityInputs{
+      preshaires::electron_volts(energy_eV),
+      preshaires::StraightTrajectory{
+          preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
+                               preshaires::meters(0.0)},
+          preshaires::make_direction(direction.x, direction.y, direction.z),
+          length},
+      std::move(field)};
+}
+
 int run_rate(int argc, char** argv) {
   if (argc != 6) {
     print_usage();
@@ -167,75 +276,52 @@ int run_rate(int argc, char** argv) {
 }
 
 int run_probability(int argc, char** argv) {
-  bool have_energy = false;
-  bool have_length = false;
-  bool have_direction = false;
-  bool have_uniform = false;
-  bool have_table = false;
-  double energy_eV = 0.0;
-  double length_m = 0.0;
-  Vector3 direction{0.0, 0.0, 0.0};
-  Vector3 uniform_field{0.0, 0.0, 0.0};
-  std::string table_path;
-
-  for (int i = 2; i < argc; i += 2) {
-    if (i + 1 >= argc) {
-      print_usage();
-      return 2;
-    }
-    const std::string_view option{argv[i]};
-    if (option == "--energy-eV") {
-      have_energy = parse_double(argv[i + 1], energy_eV);
-    } else if (option == "--length-m") {
-      have_length = parse_double(argv[i + 1], length_m);
-    } else if (option == "--direction") {
-      direction = parse_vector3(argv[i + 1]);
-      have_direction = true;
-    } else if (option == "--uniform-field-T") {
-      uniform_field = parse_vector3(argv[i + 1]);
-      have_uniform = true;
-    } else if (option == "--field-table") {
-      table_path = argv[i + 1];
-      have_table = true;
-    } else {
-      print_usage();
-      return 2;
-    }
-  }
-
-  if (!have_energy || !have_length || !have_direction ||
-      have_uniform == have_table) {
-    print_usage();
-    return 2;
-  }
-
-  const auto length = preshaires::meters(length_m);
-  const preshaires::StraightTrajectory trajectory{
-      preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
-                           preshaires::meters(0.0)},
-      preshaires::make_direction(direction.x, direction.y, direction.z), length};
-  const auto energy = preshaires::electron_volts(energy_eV);
+  const ProbabilityInputs inputs =
+      parse_probability_inputs(argc, argv, false, nullptr);
   const preshaires::IntegrationOptions options{1.0e-8, 1.0e-14, 100000};
 
-  preshaires::ConversionProbabilityResult result{};
-  if (have_uniform) {
-    const preshaires::UniformMagneticField field{
-        preshaires::MagneticFieldVector{preshaires::tesla(uniform_field.x),
-                                        preshaires::tesla(uniform_field.y),
-                                        preshaires::tesla(uniform_field.z)}};
-    result =
-        preshaires::conversion_probability(energy, trajectory, field, options);
-  } else {
-    auto nodes = read_field_table(table_path, length);
-    const preshaires::TabulatedMagneticField field{std::move(nodes)};
-    result =
-        preshaires::conversion_probability(energy, trajectory, field, options);
-  }
+  const preshaires::ConversionProbabilityResult result =
+      preshaires::conversion_probability(inputs.energy, inputs.trajectory,
+                                         *inputs.field, options);
 
   std::cout << std::setprecision(17) << "model Erber1966\n"
             << "optical_depth " << result.optical_depth.value << '\n'
             << "probability " << result.probability.value << '\n'
             << "evaluations " << result.evaluations << '\n';
+
+  return 0;
+}
+
+int run_sample_conversion(int argc, char** argv) {
+  std::uint64_t seed = 0;
+  const ProbabilityInputs inputs =
+      parse_probability_inputs(argc, argv, true, &seed);
+  Mt19937RandomEngine rng{seed};
+  const preshaires::IntegrationOptions integration_options{1.0e-8, 1.0e-14,
+                                                          100000};
+  const preshaires::LocalizationOptions localization_options{
+      preshaires::meters(1.0e-3), 1.0e-12, 128};
+  const preshaires::ConversionSample sample =
+      preshaires::sample_first_conversion(inputs.energy, inputs.trajectory,
+                                          *inputs.field, rng,
+                                          integration_options,
+                                          localization_options);
+
+  std::cout << std::setprecision(17) << "model Erber1966\n"
+            << "converted " << (sample.converted ? "true" : "false") << '\n'
+            << "random_uniform " << sample.random_uniform << '\n'
+            << "target_optical_depth " << sample.target_optical_depth.value
+            << '\n'
+            << "total_optical_depth " << sample.total_optical_depth.value
+            << '\n'
+            << "total_probability " << sample.total_probability.value << '\n'
+            << "evaluations " << sample.evaluations << '\n';
+  if (sample.converted) {
+    const auto position = *sample.position;
+    std::cout << "path_length_m " << sample.path_length->meter << '\n'
+              << "position_m " << position.x.meter << ',' << position.y.meter
+              << ',' << position.z.meter << '\n';
+  }
 
   return 0;
 }
@@ -254,6 +340,9 @@ int main(int argc, char** argv) {
     }
     if (command == "probability") {
       return run_probability(argc, argv);
+    }
+    if (command == "sample-conversion") {
+      return run_sample_conversion(argc, argv);
     }
     print_usage();
     return 2;

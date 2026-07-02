@@ -2,20 +2,67 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "preshaires/conversion_probability.hpp"
+#include "preshaires/conversion_sampling.hpp"
 #include "preshaires/constants.hpp"
 #include "preshaires/geometry.hpp"
 #include "preshaires/magnetic_field.hpp"
 #include "preshaires/pair_production.hpp"
+#include "preshaires/random.hpp"
 #include "preshaires/units.hpp"
 
 namespace {
 
 int failures = 0;
+
+class FixedRandomEngine final : public preshaires::RandomEngine {
+ public:
+  explicit FixedRandomEngine(double value) : value_(value) {}
+  double uniform_open01() override { return value_; }
+
+ private:
+  double value_;
+};
+
+class SequenceRandomEngine final : public preshaires::RandomEngine {
+ public:
+  explicit SequenceRandomEngine(std::uint64_t seed) : engine_(seed) {}
+  double uniform_open01() override {
+    for (;;) {
+      const std::uint64_t value = engine_();
+      if (value != 0 && value != std::numeric_limits<std::uint64_t>::max()) {
+        return static_cast<double>(value) /
+               static_cast<double>(std::numeric_limits<std::uint64_t>::max());
+      }
+    }
+  }
+
+ private:
+  std::mt19937_64 engine_;
+};
+
+class StepMagneticField final : public preshaires::MagneticFieldModel {
+ public:
+  StepMagneticField(preshaires::Length switch_path,
+                    preshaires::MagneticFieldVector before,
+                    preshaires::MagneticFieldVector after)
+      : switch_path_(switch_path), before_(before), after_(after) {}
+
+  preshaires::MagneticFieldVector field_at(const preshaires::Position&,
+                                           preshaires::Length path) const override {
+    return path.meter < switch_path_.meter ? before_ : after_;
+  }
+
+ private:
+  preshaires::Length switch_path_;
+  preshaires::MagneticFieldVector before_;
+  preshaires::MagneticFieldVector after_;
+};
 
 void expect_true(bool condition, const std::string& message) {
   if (!condition) {
@@ -273,6 +320,16 @@ void test_uniform_conversion_probability() {
               "uniform optical depth analytic");
   expect_near(result.probability.value, -std::expm1(-tau_expected), 1.0e-13,
               "uniform probability analytic");
+
+  const auto tau = preshaires::optical_depth(energy, trajectory, field, length,
+                                             options);
+  expect_near(tau.optical_depth.value, result.optical_depth.value, 0.0,
+              "optical_depth preserves v0.2 tau");
+  expect_near(preshaires::conversion_probability_from_optical_depth(
+                  tau.optical_depth)
+                  .value,
+              result.probability.value, 0.0,
+              "conversion_probability preserves v0.2 probability");
 }
 
 void test_parallel_conversion_probability() {
@@ -372,6 +429,246 @@ void test_small_and_saturated_probability() {
               "saturated probability approaches one");
 }
 
+preshaires::IntegrationOptions sampling_integration_options() {
+  return preshaires::IntegrationOptions{1.0e-10, 1.0e-14, 200000};
+}
+
+preshaires::LocalizationOptions sampling_localization_options() {
+  return preshaires::LocalizationOptions{preshaires::meters(1.0e-5), 1.0e-12,
+                                         160};
+}
+
+void test_uniform_sampling_conversion() {
+  const auto energy = preshaires::electron_volts(7.0e19);
+  const auto length = preshaires::meters(1.0e7);
+  const auto trajectory = preshaires::StraightTrajectory{
+      preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
+                           preshaires::meters(0.0)},
+      preshaires::make_direction(0.0, 0.0, -1.0), length};
+  const auto b_perp = preshaires::tesla(2.115138e-5);
+  const preshaires::UniformMagneticField field{
+      preshaires::MagneticFieldVector{b_perp, preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)}};
+  constexpr double uniform = 0.5;
+  FixedRandomEngine rng{uniform};
+  const auto sample = preshaires::sample_first_conversion(
+      energy, trajectory, field, rng, sampling_integration_options(),
+      sampling_localization_options());
+  const double alpha =
+      preshaires::erber1966_pair_production_rate(energy, b_perp).per_second /
+      preshaires::constants::speed_of_light_m_per_s;
+  const double expected_s = -std::log(uniform) / alpha;
+  expect_true(sample.converted, "uniform sample converts");
+  expect_near(sample.path_length->meter, expected_s, 1.0e-10,
+              "uniform sample path length");
+  const auto expected_position =
+      preshaires::position_at(trajectory, preshaires::meters(expected_s));
+  expect_near(sample.position->z.meter, expected_position.z.meter, 1.0e-10,
+              "uniform sample position");
+  const auto tau_at_sample = preshaires::optical_depth(
+      energy, trajectory, field, *sample.path_length,
+      sampling_integration_options());
+  expect_near(tau_at_sample.optical_depth.value,
+              sample.target_optical_depth.value, 1.0e-8,
+              "tau at sampled path matches target");
+}
+
+void test_sampling_no_conversion_and_parallel() {
+  const auto trajectory = make_test_trajectory(1.0e7);
+  const auto energy = preshaires::electron_volts(7.0e19);
+  const preshaires::UniformMagneticField perpendicular{
+      preshaires::MagneticFieldVector{preshaires::tesla(2.115138e-5),
+                                      preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)}};
+  FixedRandomEngine no_conversion_rng{1.0e-6};
+  const auto no_conversion = preshaires::sample_first_conversion(
+      energy, trajectory, perpendicular, no_conversion_rng,
+      sampling_integration_options(), sampling_localization_options());
+  expect_true(!no_conversion.converted, "large target optical depth does not convert");
+  expect_true(!no_conversion.path_length.has_value(), "no conversion has no path");
+  expect_true(!no_conversion.position.has_value(), "no conversion has no position");
+
+  const preshaires::UniformMagneticField parallel{
+      preshaires::MagneticFieldVector{preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0),
+                                      preshaires::tesla(2.0e-5)}};
+  FixedRandomEngine parallel_rng{0.5};
+  const auto parallel_sample = preshaires::sample_first_conversion(
+      energy, trajectory, parallel, parallel_rng, sampling_integration_options(),
+      sampling_localization_options());
+  expect_true(!parallel_sample.converted, "parallel field never converts");
+  expect_near(parallel_sample.total_optical_depth.value, 0.0, 0.0,
+              "parallel total tau is zero");
+}
+
+void test_sampling_near_extremes() {
+  const auto energy = preshaires::electron_volts(7.0e19);
+  const auto length = preshaires::meters(1.0e7);
+  const auto trajectory = preshaires::StraightTrajectory{
+      preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
+                           preshaires::meters(0.0)},
+      preshaires::make_direction(0.0, 0.0, -1.0), length};
+  const auto b_perp = preshaires::tesla(2.115138e-5);
+  const preshaires::UniformMagneticField field{
+      preshaires::MagneticFieldVector{b_perp, preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)}};
+  FixedRandomEngine near_start_rng{std::nextafter(1.0, 0.0)};
+  const auto near_start = preshaires::sample_first_conversion(
+      energy, trajectory, field, near_start_rng, sampling_integration_options(),
+      sampling_localization_options());
+  expect_true(near_start.converted, "near-start sample converts");
+  expect_true(near_start.path_length->meter < 1.0,
+              "near-start sample is close to start");
+
+  const auto total = preshaires::optical_depth(
+      energy, trajectory, field, length, sampling_integration_options());
+  const double target = std::nextafter(total.optical_depth.value, 0.0);
+  FixedRandomEngine near_end_rng{std::exp(-target)};
+  const auto near_end = preshaires::sample_first_conversion(
+      energy, trajectory, field, near_end_rng, sampling_integration_options(),
+      sampling_localization_options());
+  expect_true(near_end.converted, "near-end sample converts");
+  expect_true(near_end.path_length->meter <= length.meter,
+              "near-end sample stays inside trajectory");
+  expect_true(near_end.path_length->meter > length.meter - 100.0,
+              "near-end sample is close to end");
+}
+
+void test_invalid_rng_values() {
+  const auto trajectory = make_test_trajectory(1.0e7);
+  const preshaires::UniformMagneticField field{
+      preshaires::MagneticFieldVector{preshaires::tesla(2.0e-5),
+                                      preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)}};
+  const auto call_with = [&](double value) {
+    FixedRandomEngine rng{value};
+    (void)preshaires::sample_first_conversion(
+        preshaires::electron_volts(7.0e19), trajectory, field, rng,
+        sampling_integration_options(), sampling_localization_options());
+  };
+  expect_throws<std::runtime_error>([&] { call_with(0.0); }, "rng zero rejected");
+  expect_throws<std::runtime_error>([&] { call_with(1.0); }, "rng one rejected");
+  expect_throws<std::runtime_error>([&] { call_with(-0.1); }, "rng negative rejected");
+  expect_throws<std::runtime_error>(
+      [&] { call_with(std::numeric_limits<double>::quiet_NaN()); },
+      "rng NaN rejected");
+  expect_throws<std::runtime_error>(
+      [&] { call_with(std::numeric_limits<double>::infinity()); },
+      "rng infinity rejected");
+}
+
+void test_sampling_zero_rate_interval_and_plateau() {
+  const auto energy = preshaires::electron_volts(7.0e19);
+  const auto trajectory = preshaires::StraightTrajectory{
+      preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
+                           preshaires::meters(0.0)},
+      preshaires::make_direction(0.0, 0.0, -1.0), preshaires::meters(1000.0)};
+  const auto active_field = preshaires::MagneticFieldVector{
+      preshaires::tesla(1.0e-4), preshaires::tesla(0.0),
+      preshaires::tesla(0.0)};
+  const StepMagneticField delayed{
+      preshaires::meters(200.0),
+      preshaires::MagneticFieldVector{preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)},
+      active_field};
+  const double alpha = preshaires::erber1966_pair_production_rate(
+                           energy, preshaires::tesla(1.0e-4))
+                           .per_second /
+                       preshaires::constants::speed_of_light_m_per_s;
+  const double target = alpha * 50.0;
+  FixedRandomEngine delayed_rng{std::exp(-target)};
+  const auto delayed_sample = preshaires::sample_first_conversion(
+      energy, trajectory, delayed, delayed_rng,
+      preshaires::IntegrationOptions{1.0e-9, 1.0e-13, 200000},
+      sampling_localization_options());
+  expect_true(delayed_sample.converted, "delayed field sample converts");
+  expect_true(delayed_sample.path_length->meter >= 200.0,
+              "sample is not in zero-rate interval");
+
+  const preshaires::TabulatedMagneticField plateau{
+      std::vector<preshaires::TabulatedMagneticFieldNode>{
+          {preshaires::meters(0.0), active_field},
+          {preshaires::meters(500.0),
+           {preshaires::tesla(0.0), preshaires::tesla(0.0),
+            preshaires::tesla(0.0)}},
+          {preshaires::meters(700.0),
+           {preshaires::tesla(0.0), preshaires::tesla(0.0),
+            preshaires::tesla(0.0)}},
+          {preshaires::meters(1000.0), active_field}}};
+  const double plateau_target = preshaires::optical_depth(
+                                    energy, trajectory, plateau,
+                                    preshaires::meters(500.0),
+                                    preshaires::IntegrationOptions{
+                                        1.0e-9, 1.0e-13, 200000})
+                                    .optical_depth.value;
+  FixedRandomEngine plateau_rng{std::exp(-plateau_target)};
+  const auto plateau_sample = preshaires::sample_first_conversion(
+      energy, trajectory, plateau, plateau_rng,
+      preshaires::IntegrationOptions{1.0e-9, 1.0e-13, 200000},
+      preshaires::LocalizationOptions{preshaires::meters(2.0), 0.0, 160});
+  expect_true(plateau_sample.converted, "plateau sample converts");
+  expect_near(plateau_sample.path_length->meter, 500.0, 5.0e-3,
+              "plateau sample returns first compatible point");
+}
+
+void test_sampling_statistics_and_reproducibility() {
+  const auto energy = preshaires::electron_volts(7.0e19);
+  const auto length = preshaires::meters(1.0e6);
+  const auto trajectory = preshaires::StraightTrajectory{
+      preshaires::Position{preshaires::meters(0.0), preshaires::meters(0.0),
+                           preshaires::meters(0.0)},
+      preshaires::make_direction(0.0, 0.0, -1.0), length};
+  const auto b_perp = preshaires::tesla(2.115138e-5);
+  const preshaires::UniformMagneticField field{
+      preshaires::MagneticFieldVector{b_perp, preshaires::tesla(0.0),
+                                      preshaires::tesla(0.0)}};
+  const double alpha =
+      preshaires::erber1966_pair_production_rate(energy, b_perp).per_second /
+      preshaires::constants::speed_of_light_m_per_s;
+  const double expected_fraction = -std::expm1(-alpha * length.meter);
+  constexpr int samples = 10000;
+  int converted = 0;
+  SequenceRandomEngine rng{123456};
+  for (int i = 0; i < samples; ++i) {
+    const auto sample = preshaires::sample_first_conversion(
+        energy, trajectory, field, rng,
+        preshaires::IntegrationOptions{1.0e-8, 1.0e-12, 10000},
+        preshaires::LocalizationOptions{preshaires::meters(1.0e-2), 1.0e-10,
+                                        80});
+    if (sample.converted) {
+      ++converted;
+    }
+  }
+  const double observed_fraction = static_cast<double>(converted) / samples;
+  const double sigma =
+      std::sqrt(expected_fraction * (1.0 - expected_fraction) / samples);
+  expect_true(std::abs(observed_fraction - expected_fraction) < 5.0 * sigma,
+              "sample conversion fraction matches binomial expectation");
+
+  SequenceRandomEngine rng_a{98765};
+  SequenceRandomEngine rng_b{98765};
+  for (int i = 0; i < 10; ++i) {
+    const auto a = preshaires::sample_first_conversion(
+        energy, trajectory, field, rng_a,
+        preshaires::IntegrationOptions{1.0e-8, 1.0e-12, 10000},
+        sampling_localization_options());
+    const auto b = preshaires::sample_first_conversion(
+        energy, trajectory, field, rng_b,
+        preshaires::IntegrationOptions{1.0e-8, 1.0e-12, 10000},
+        sampling_localization_options());
+    expect_true(a.converted == b.converted, "reproducible converted flag");
+    expect_near(a.random_uniform, b.random_uniform, 0.0,
+                "reproducible random U");
+    expect_near(a.target_optical_depth.value, b.target_optical_depth.value, 0.0,
+                "reproducible target tau");
+    if (a.converted) {
+      expect_near(a.path_length->meter, b.path_length->meter, 0.0,
+                  "reproducible path length");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -388,6 +685,12 @@ int main() {
   test_parallel_conversion_probability();
   test_linear_profile_and_convergence();
   test_small_and_saturated_probability();
+  test_uniform_sampling_conversion();
+  test_sampling_no_conversion_and_parallel();
+  test_sampling_near_extremes();
+  test_invalid_rng_values();
+  test_sampling_zero_rate_interval_and_plateau();
+  test_sampling_statistics_and_reproducibility();
 
   if (failures != 0) {
     std::cerr << failures << " test failure(s)\n";

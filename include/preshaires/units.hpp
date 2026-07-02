@@ -56,6 +56,10 @@ struct Rate {
   return std::isfinite(value.tesla);
 }
 
+[[nodiscard]] inline bool is_finite(Length value) {
+  return std::isfinite(value.meter);
+}
+
 [[nodiscard]] inline bool is_finite(Time value) {
   return std::isfinite(value.second);
 }

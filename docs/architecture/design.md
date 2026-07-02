@@ -78,11 +78,64 @@ The core performs no file or console I/O. The CLI prints machine-readable text
 for the current diagnostic command. Future I/O formats should be introduced only
 after the core data model is stable.
 
+For v0.2, tabulated magnetic-field input is read only by the CLI. The core
+receives already parsed C++ nodes with explicit units.
+
+## Straight-Trajectory Model
+
+v0.2 adds a prescribed rectilinear trajectory:
+
+- `Position` stores Cartesian coordinates in meters.
+- `Direction` is a unit vector built with `make_direction()`.
+- `StraightTrajectory` stores a start position, direction and finite
+  nonnegative path length.
+
+This is not Earth geometry. It is a minimal integration domain for optical
+depth tests and standalone diagnostics.
+
+## Magnetic-Field Interface
+
+`MagneticFieldModel` supplies `field_at(position, path_length)`. Two concrete
+models are available:
+
+- `UniformMagneticField`, which returns one fixed vector.
+- `TabulatedMagneticField`, which linearly interpolates strictly increasing
+  path-length nodes and refuses extrapolation.
+
+The transverse field is computed as `|B - (B dot n)n|`, with small negative
+roundoff residues clamped to zero.
+
+## Conversion-Probability Integration
+
+The deterministic probability is:
+
+```text
+tau = integral_0^L [Gamma(E, B_perp(s)) / c] ds
+P = -expm1(-tau)
+```
+
+`Gamma` is provided by the existing Erber local-rate function; the integration
+code does not duplicate the pair-production formula. The numerical method is an
+iterative adaptive Simpson rule with explicit absolute/relative tolerances,
+evaluation counting and a maximum-evaluation failure path. It computes only
+survival probability, not the sampled interaction point.
+
+## Deferred Geometry and IGRF
+
+Earth coordinates, altitude, AIRES coordinate transforms and IGRF remain
+deferred because they would couple this stage to site/date conventions and
+field-model ownership. v0.2 instead establishes the field-provider interface
+that those later systems can implement.
+
 ## Tests
 
 The first unit tests cover unit conversions, `chi`, the Erber rate, finiteness,
 positivity and local monotonicity. Historical diagnostics under `docs/`,
 `diagnostics/` and `tests/` remain reference material for later migration.
+
+v0.2 extends tests to geometry, uniform and tabulated fields, analytic uniform
+optical depth, parallel-field zero probability, linear-profile integration,
+convergence, small probabilities and saturated probabilities.
 
 ## Migration Strategy
 

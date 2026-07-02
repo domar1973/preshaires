@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(preshaires-core
+  src/core/conversion_probability.cpp
+  src/core/geometry.cpp
+  src/core/magnetic_field.cpp
   src/core/pair_production.cpp
 )
 add_library(preshaires::core ALIAS preshaires-core)
@@ -39,3 +42,21 @@ target_link_libraries(preshaires-tests PRIVATE preshaires::core)
 target_compile_options(preshaires-tests PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME preshaires-tests COMMAND preshaires-tests)
+
+add_test(
+  NAME preshaires-cli-probability-uniform
+  COMMAND preshaires-cli probability
+          --energy-eV 7e19
+          --length-m 1e7
+          --direction 0,0,-1
+          --uniform-field-T 2.115138e-5,0,0
+)
+
+add_test(
+  NAME preshaires-cli-probability-tabulated
+  COMMAND preshaires-cli probability
+          --energy-eV 7e19
+          --length-m 1e7
+          --direction 0,0,-1
+          --field-table ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/uniform_field.csv
+)

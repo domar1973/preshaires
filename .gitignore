@@ -1,0 +1,5 @@
+.MaGICS.cfg
+magics
+tests/pair_rate/dbskr3_probe
+diagnostics/*.png
+diagnostics/*.csv

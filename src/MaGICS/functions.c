@@ -6,6 +6,13 @@
  and angular distributions.
 
 *****************************************************************/
+#ifdef MAGICS_CONVERSION_DIAGNOSTICS
+#ifndef MAGICS_CONVERSION_DIAGNOSTICS_PATH
+#define MAGICS_CONVERSION_DIAGNOSTICS_PATH \
+  "docs/conversion_probability_diagnostics.csv"
+#endif
+#endif
+
 double sqr(double x)
 {
   return x*x;
@@ -124,6 +131,8 @@ double random_electron_energy_fraction(double chi)
   return((min + urandom_())/1024.0);
 }
 
+#define ERBER_PAIR_COEFFICIENT 0.16
+
 /*Erber's analytical aproximation*/
 double pair_production_probability(double Energy, 
                                    double chi, double deltatime)
@@ -131,7 +140,11 @@ double pair_production_probability(double Energy,
   double besselarg,result;
   int mu=1;
   besselarg=2/(3*chi);
-  result=1.234E18*deltatime*(electron_mass*c*c/(Energy*1E9*e))*
+  /* Erber 1966 Eqs. (3.3d, 3.4): 0.16 is the dimensionless
+     coefficient; alpha*m_e*c^2/hbar converts the attenuation to a
+     rate per unit time. */
+  result=ERBER_PAIR_COEFFICIENT*alpha*electron_mass*c*c/hbar*
+               deltatime*(electron_mass*c*c/(Energy*1E9*e))*
                sqr(dbskr3_(&besselarg,&mu));
   return(result);
 }
@@ -206,6 +219,27 @@ double conversion_probability()
   struct particle *auxiliar_photon;
   double prob_non_up_to_now=1;
   double proba, chi_now, dt;
+#ifdef MAGICS_CONVERSION_DIAGNOSTICS
+  FILE *diagnostics_csv=NULL;
+  int diagnostics_step=0;
+  int diagnostics_over_001=0;
+  int diagnostics_over_01=0;
+  int diagnostics_out_of_range=0;
+  double diagnostics_max_proba=-1;
+  diagnostics_csv=fopen(MAGICS_CONVERSION_DIAGNOSTICS_PATH,"w");
+  if (diagnostics_csv==NULL)
+    {
+      printf("MAGICS_CONVERSION_DIAGNOSTICS: cannot open %s\n",
+             MAGICS_CONVERSION_DIAGNOSTICS_PATH);
+    }
+  else
+    {
+      fprintf(diagnostics_csv,
+              "step,time_s,distance_m,altitude_m,energy_GeV,"
+              "B_nT,Bperp_nT,chi,dt_s,step_probability,"
+              "accumulated_survival,accumulated_probability\n");
+    }
+#endif
   auxiliar_photon = (struct particle *)malloc(sizeof(struct particle));
   auxiliar_photon->particleID = first_particle->particleID;
   auxiliar_photon->energy = first_particle->energy;
@@ -226,10 +260,61 @@ double conversion_probability()
       if (auxiliar_photon->altitude<0.1*earth_radius){dt=5E-7;}
       else {dt=1E-5;}
       proba=pair_production_probability(auxiliar_photon->energy,chi_now,dt);
+#ifdef MAGICS_CONVERSION_DIAGNOSTICS
+      double diagnostics_b_t=lastbfield.strength*bcrit;
+      double diagnostics_bdotk=0;
+      double diagnostics_bperp_t;
+      double diagnostics_perp_sq;
+      for(i=0;i<3;i++)
+	diagnostics_bdotk+=lastbfield.direction[i]*
+	                   auxiliar_photon->motion_direction[i];
+      diagnostics_perp_sq=1-diagnostics_bdotk*diagnostics_bdotk;
+      if (diagnostics_perp_sq<0){diagnostics_perp_sq=0;}
+      diagnostics_bperp_t=diagnostics_b_t*sqrt(diagnostics_perp_sq);
+      if (proba>diagnostics_max_proba){diagnostics_max_proba=proba;}
+      if (proba>0.01){diagnostics_over_001++;}
+      if (proba>0.1){diagnostics_over_01++;}
+      if ((proba<0)||(proba>1))
+	{
+	  diagnostics_out_of_range++;
+	  printf("MAGICS_CONVERSION_DIAGNOSTICS: step_probability out of range "
+	         "at step %i: %E\n",diagnostics_step,proba);
+	}
+#endif
       prob_non_up_to_now *= (1-proba);
+#ifdef MAGICS_CONVERSION_DIAGNOSTICS
+      if (diagnostics_csv!=NULL)
+	{
+	  fprintf(diagnostics_csv,
+	          "%i,%.17E,%.17E,%.17E,%.17E,"
+	          "%.17E,%.17E,%.17E,%.17E,%.17E,"
+	          "%.17E,%.17E\n",
+	          diagnostics_step,
+	          auxiliar_photon->last_time,
+	          c*(auxiliar_photon->last_time-first_particle->last_time),
+	          auxiliar_photon->altitude,
+	          auxiliar_photon->energy,
+	          diagnostics_b_t,
+	          diagnostics_bperp_t,
+	          chi_now,
+	          dt,
+	          proba,
+	          prob_non_up_to_now,
+	          1-prob_non_up_to_now);
+	}
+      diagnostics_step++;
+#endif
       for(i=0;i<3;i++)
 	auxiliar_photon->position[i]+=c*dt*first_particle->motion_direction[i];
     }
+#ifdef MAGICS_CONVERSION_DIAGNOSTICS
+  if (diagnostics_csv!=NULL){fclose(diagnostics_csv);}
+  printf("MAGICS_CONVERSION_DIAGNOSTICS: max(step_probability)=%E; "
+         "steps(probability>0.01)=%i; steps(probability>0.1)=%i; "
+         "steps(probability<0 or >1)=%i\n",
+         diagnostics_max_proba,diagnostics_over_001,diagnostics_over_01,
+         diagnostics_out_of_range);
+#endif
   free(auxiliar_photon);
   auxiliar_photon=NULL;
   return(1-prob_non_up_to_now);
